@@ -1,12 +1,14 @@
 """
-Technical indicators: RSI, MACD, Bollinger Bands, SuperTrend, Stochastic, Williams %R, EMA.
-Uses the ta library (pure Python, no TA-Lib C dependency).
+Technical indicators: RSI, MACD, Bollinger Bands, SuperTrend, Stochastic, Williams %R, EMA,
+VWAP, OBV, CMF. Uses the ta library (pure Python, no TA-Lib C dependency).
 """
 
+import numpy as np
 import pandas as pd
 from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator
-from ta.trend import MACD, EMAIndicator
+from ta.trend import ADXIndicator, MACD, EMAIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
+from ta.volume import ChaikinMoneyFlowIndicator, OnBalanceVolumeIndicator, VolumeWeightedAveragePrice
 
 
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -32,6 +34,60 @@ def compute_macd(
         window_sign=window_sign,
     )
     return macd.macd(), macd.macd_signal(), macd.macd_diff()
+
+
+def compute_atr(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    window: int = 14,
+) -> pd.Series:
+    """
+    Compute Average True Range (ATR).
+    Returns series; last value is most recent.
+    """
+    atr_ind = AverageTrueRange(high=high, low=low, close=close, window=window)
+    return atr_ind.average_true_range()
+
+
+def compute_atr_pct(close: pd.Series, atr: pd.Series) -> pd.Series:
+    """
+    Compute ATR as percentage of price: ATR / Close * 100.
+    """
+    return (atr / close).replace(0, float("nan")) * 100
+
+
+def compute_sma_200(close: pd.Series) -> pd.Series:
+    """Compute 200-period simple moving average. Returns series; first 199 values are NaN."""
+    return close.rolling(200).mean()
+
+
+def compute_donchian(
+    high: pd.Series,
+    low: pd.Series,
+    period: int = 20,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Compute Donchian channel: upper = rolling max of high, lower = rolling min of low.
+    Returns (upper, lower).
+    """
+    upper = high.rolling(window=period, min_periods=period).max()
+    lower = low.rolling(window=period, min_periods=period).min()
+    return upper, lower
+
+
+def compute_adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """
+    Compute ADX (Average Directional Index). Used to filter choppy regimes.
+    ADX > 20-25 suggests trending; below suggests ranging.
+    """
+    adx_ind = ADXIndicator(high=high, low=low, close=close, window=period)
+    return adx_ind.adx()
 
 
 def compute_bollinger(
@@ -125,7 +181,7 @@ def compute_supertrend(
         if i < period:
             final_ub[i] = float(basic_ub.iloc[i]) if i < len(basic_ub) else 0.0
             final_lb[i] = float(basic_lb.iloc[i]) if i < len(basic_lb) else 0.0
-            supertrend[i] = 0.0
+            supertrend[i] = float("nan")
         else:
             # Final Upper Band
             if basic_ub.iloc[i] < final_ub[i - 1] or close.iloc[i - 1] > final_ub[i - 1]:
@@ -165,6 +221,63 @@ def compute_supertrend(
     return st_series, direction
 
 
+def compute_vwap_deviation(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    window: int = 14,
+) -> pd.Series:
+    """
+    Compute % deviation of close from VWAP.
+    Positive = price above VWAP; negative = price below VWAP.
+    """
+    vwap = VolumeWeightedAveragePrice(
+        high=high, low=low, close=close, volume=volume, window=window
+    )
+    vwap_series = vwap.volume_weighted_average_price()
+    return ((close - vwap_series) / vwap_series.replace(0, np.nan)) * 100
+
+
+def compute_obv_divergence(
+    close: pd.Series,
+    volume: pd.Series,
+    sma_period: int = 20,
+) -> pd.Series:
+    """
+    Detect OBV divergence: +1 when OBV trending up but price trending down (bullish),
+    -1 when OBV trending down but price trending up (bearish), 0 otherwise.
+    """
+    obv = OnBalanceVolumeIndicator(close=close, volume=volume)
+    obv_series = obv.on_balance_volume()
+    obv_sma = obv_series.rolling(window=sma_period, min_periods=1).mean()
+    price_sma = close.rolling(window=sma_period, min_periods=1).mean()
+
+    obv_slope = obv_sma.diff(5)
+    price_slope = price_sma.diff(5)
+
+    divergence = pd.Series(0, index=close.index)
+    # Bullish divergence: OBV rising, price falling
+    divergence[(obv_slope > 0) & (price_slope < 0)] = 1
+    # Bearish divergence: OBV falling, price rising
+    divergence[(obv_slope < 0) & (price_slope > 0)] = -1
+    return divergence
+
+
+def compute_cmf(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    window: int = 20,
+) -> pd.Series:
+    """Compute Chaikin Money Flow (-1 to +1). Positive = buying pressure."""
+    cmf = ChaikinMoneyFlowIndicator(
+        high=high, low=low, close=close, volume=volume, window=window
+    )
+    return cmf.chaikin_money_flow()
+
+
 def get_latest_indicators(
     df: pd.DataFrame,
     rsi_period: int = 14,
@@ -180,6 +293,8 @@ def get_latest_indicators(
     willr_period: int = 14,
     ema_fast: int = 9,
     ema_slow: int = 21,
+    atr_period: int = 14,
+    atr_avg_period: int = 20,
 ) -> dict[str, float] | None:
     """
     Compute all indicators and return latest values for the most recent bar.
@@ -187,7 +302,8 @@ def get_latest_indicators(
 
     Returns dict with keys: rsi, macd_hist, bb_upper, bb_middle, bb_lower, close,
     supertrend_value, supertrend_direction, stoch_k, stoch_d, williams_r,
-    ema_fast, ema_slow, ema_bullish (1=bullish, -1=bearish).
+    ema_fast, ema_slow, ema_bullish (1=bullish, -1=bearish),
+    atr, atr_pct, atr_pct_vs_avg (current ATR % minus its avg; positive=high vol).
     Returns None if insufficient data.
     """
     if df is None or df.empty or "Close" not in df.columns:
@@ -201,7 +317,7 @@ def get_latest_indicators(
 
     min_len = max(
         rsi_period, macd_slow, bb_period, supertrend_period,
-        stoch_window, willr_period, ema_slow
+        stoch_window, willr_period, ema_slow, atr_period + atr_avg_period
     ) + 15
     if len(close) < min_len:
         return None
@@ -219,6 +335,11 @@ def get_latest_indicators(
     ema_fast_series, ema_slow_series, ema_bullish_series = compute_ema_crossover(
         close, fast=ema_fast, slow=ema_slow
     )
+    atr_series = compute_atr(high, low, close, window=atr_period)
+    atr_pct_series = compute_atr_pct(close, atr_series)
+    atr_pct_avg = atr_pct_series.rolling(window=atr_avg_period, min_periods=1).mean()
+    atr_pct_vs_avg_series = atr_pct_series - atr_pct_avg
+    sma_200_series = compute_sma_200(close)
 
     last = close.index[-1]
     rsi_val = rsi_series.loc[last] if last in rsi_series.index else rsi_series.iloc[-1]
@@ -235,8 +356,13 @@ def get_latest_indicators(
     ema_fast_val = ema_fast_series.loc[last] if last in ema_fast_series.index else ema_fast_series.iloc[-1]
     ema_slow_val = ema_slow_series.loc[last] if last in ema_slow_series.index else ema_slow_series.iloc[-1]
     ema_bullish_val = ema_bullish_series.loc[last] if last in ema_bullish_series.index else ema_bullish_series.iloc[-1]
+    atr_val = atr_series.loc[last] if last in atr_series.index else atr_series.iloc[-1]
+    atr_pct_val = atr_pct_series.loc[last] if last in atr_pct_series.index else atr_pct_series.iloc[-1]
+    atr_pct_vs_avg_val = atr_pct_vs_avg_series.loc[last] if last in atr_pct_vs_avg_series.index else atr_pct_vs_avg_series.iloc[-1]
+    sma_200_val = sma_200_series.loc[last] if last in sma_200_series.index else sma_200_series.iloc[-1]
+    sma_200_float = float(sma_200_val) if pd.notna(sma_200_val) else float("nan")
 
-    return {
+    result = {
         "rsi": float(rsi_val),
         "macd_hist": float(hist_val),
         "bb_upper": float(upper_val),
@@ -251,4 +377,36 @@ def get_latest_indicators(
         "ema_fast": float(ema_fast_val),
         "ema_slow": float(ema_slow_val),
         "ema_bullish": int(ema_bullish_val),
+        "atr": float(atr_val),
+        "atr_pct": float(atr_pct_val),
+        "atr_pct_vs_avg": float(atr_pct_vs_avg_val),
+        "sma_200": sma_200_float,
+        "vwap_deviation": None,
+        "obv_divergence": None,
+        "cmf": None,
     }
+
+    # Volume indicators — only when volume data is available and non-zero
+    if "Volume" in df.columns:
+        volume = df["Volume"].reindex(close.index).fillna(0)
+        if volume.sum() > 0:
+            try:
+                vwap_dev = compute_vwap_deviation(high, low, close, volume)
+                vwap_dev_val = vwap_dev.iloc[-1]
+                result["vwap_deviation"] = float(vwap_dev_val) if pd.notna(vwap_dev_val) else None
+            except Exception:
+                pass
+            try:
+                obv_div = compute_obv_divergence(close, volume)
+                obv_div_val = obv_div.iloc[-1]
+                result["obv_divergence"] = int(obv_div_val)
+            except Exception:
+                pass
+            try:
+                cmf_series = compute_cmf(high, low, close, volume)
+                cmf_val = cmf_series.iloc[-1]
+                result["cmf"] = float(cmf_val) if pd.notna(cmf_val) else None
+            except Exception:
+                pass
+
+    return result

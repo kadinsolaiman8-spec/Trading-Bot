@@ -88,6 +88,46 @@ def get_constituents(index_id: str) -> list[str] | None:
         return None
 
 
+def get_supported_summary() -> dict:
+    """
+    Return markets, indexes with counts, and total unique ticker count.
+    Used by /supported command.
+    """
+    from src.stocks import get_sp100_tickers
+
+    indexes: list[tuple[str, int]] = []
+    all_tickers: set[str] = set(get_sp100_tickers())
+
+    for idx_id, (name, _) in INDEX_REGISTRY.items():
+        constituents = get_constituents(idx_id)
+        count = len(constituents) if constituents else 0
+        indexes.append((name, count))
+        if constituents:
+            all_tickers.update(constituents)
+
+    # Deduplicate markets by unique index-id sets; use first country as display name
+    seen: set[frozenset[str]] = set()
+    markets: list[tuple[str, list[str]]] = []
+    display_names: dict[str, str] = {
+        "usa": "USA", "america": "USA", "us": "USA", "united states": "USA",
+        "germany": "Germany", "uk": "United Kingdom", "united kingdom": "UK",
+        "britain": "United Kingdom", "france": "France",
+    }
+    for country, ids in COUNTRY_TO_INDICES.items():
+        key = frozenset(ids)
+        if key not in seen:
+            seen.add(key)
+            index_names = [INDEX_REGISTRY[i][0] for i in ids]
+            display = display_names.get(country, country.replace("_", " ").title())
+            markets.append((display, index_names))
+
+    return {
+        "markets": markets,
+        "indexes": indexes,
+        "total_unique": len(all_tickers),
+    }
+
+
 def resolve_input(query: str) -> list[IndexInfo]:
     """
     Resolve user input (index name or country) to matching indices.
