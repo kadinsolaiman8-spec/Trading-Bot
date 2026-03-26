@@ -1,8 +1,8 @@
-# Crepido
+# DTB
 
 > **This project is archived.** After five rounds of rigorous statistical validation, no strategy produced a detectable edge over buy-and-hold. Development has stopped. The code and results are preserved here as a case study in honest quantitative strategy validation.
 
-**Crepido** was a Discord trading bot that scanned stocks and ETFs for technical signals using a weighted consensus of 11 indicators. It included walk-forward optimization, stationary bootstrap significance testing, and cross-sectional excess Sharpe analysis. The validation infrastructure worked exactly as intended — it correctly identified that the strategies had no edge.
+**DTB** was a Discord trading bot that scanned stocks and ETFs for technical signals using a weighted consensus of 11 indicators. It included walk-forward optimization, stationary bootstrap significance testing, and cross-sectional excess Sharpe analysis. The validation infrastructure worked exactly as intended — it correctly identified that the strategies had no edge.
 
 ---
 
